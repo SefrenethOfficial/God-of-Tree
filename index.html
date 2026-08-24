@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>God of Tree</title>
 <style>
   :root {
@@ -24,6 +25,8 @@
     background: #0e0b08;
     overflow: hidden;
     font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+    touch-action: none;
+    overscroll-behavior: none;
   }
   #gameWrap {
     position: relative;
@@ -36,65 +39,27 @@
   canvas {
     background: var(--grass-1);
     image-rendering: pixelated;
-    box-shadow: 0 0 0 4px var(--panel-border), 0 0 40px rgba(0,0,0,0.6);
-    max-width: 100%;
-    max-height: 100%;
+    display: block;
+    touch-action: none;
   }
-  #hud {
-    position: absolute;
-    top: 14px;
-    left: 14px;
-    background: var(--panel-bg);
-    border: 2px solid var(--panel-border);
-    border-radius: 6px;
-    padding: 10px 14px;
-    color: var(--ink);
-    font-size: 13px;
-    line-height: 1.5;
-    pointer-events: none;
-    opacity: 0.92;
-  }
-  #hud b { color: var(--accent); }
-  #coords {
-    position: absolute;
-    bottom: 14px;
-    left: 14px;
-    background: var(--panel-bg);
-    border: 2px solid var(--panel-border);
-    border-radius: 6px;
-    padding: 8px 12px;
-    color: var(--ink);
-    font-size: 12px;
-    font-family: 'Consolas', monospace;
-    opacity: 0.85;
-  }
-  #hint {
-    position: absolute;
-    bottom: 14px;
-    right: 14px;
-    background: var(--panel-bg);
-    border: 2px solid var(--panel-border);
-    border-radius: 6px;
-    padding: 8px 12px;
-    color: var(--ink);
-    font-size: 12px;
-    opacity: 0.85;
-    max-width: 220px;
-  }
-</style>
-</head>
-<body>
-<div id="gameWrap">
-  <canvas id="game" width="768" height="576"></canvas>
-  <div id="hud"><b>WASD</b> or <b>Arrow Keys</b> to move<br>Mouse to aim, <b>Click</b> to shoot<br><b>Shift</b> to run, <b>Space</b> to roll</div>
-  <div id="coords">tile: (0, 0)</div>
-  <div id="hint">You start with a Pistol — buy the Weapon upgrade in the shop to work up through Assault Rifle, Handgun, SMG, Shotgun, Minigun, RPG, and Mega RPG.</div>
-</div>
-
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
+
+// set an initial size immediately; touch-button layout is handled once
+// layoutTouchButtons() exists further down (see ROLL_BTN setup)
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+function resizeCanvasToWindow() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  ctx.imageSmoothingEnabled = false; // resizing resets context state
+  if (typeof layoutTouchButtons === 'function') layoutTouchButtons();
+}
+window.addEventListener('resize', resizeCanvasToWindow);
+window.addEventListener('orientationchange', resizeCanvasToWindow);
 
 const TILE = 32;
 let MAP_W = 40;
@@ -126,7 +91,9 @@ splashImg.src = splashSrc;
 // --- Tile types (shared across all maps) ---
 const TILE_GRASS = 0, TILE_GRASS2 = 1, TILE_PATH = 2, TILE_WATER = 3, TILE_TREE = 4;
 const TILE_FLOOR = 5, TILE_WALL = 6, TILE_CONVEYOR = 7, TILE_FLAME = 8;
+const TILE_SAND = 9, TILE_SAND2 = 10, TILE_CACTUS = 11;
 const CONVEYOR_SPEED = 75; // px/sec pushed onto anyone standing on a conveyor tile
+const CACTUS_DAMAGE = 6;   // damage per contact with a cactus patch
 
 // --- Map: Tree (default forest map) ---
 function generateTreeMap() {
@@ -215,7 +182,53 @@ function generateInfernoMap() {
 }
 
 function generateMapFor(mapId) {
-  return mapId === 'inferno' ? generateInfernoMap() : generateTreeMap();
+  if (mapId === 'inferno') return generateInfernoMap();
+  if (mapId === 'desert') return generateDesertMap();
+  return generateTreeMap();
+}
+
+// --- Map: Desert (sandy terrain with damaging cacti) ---
+function generateDesertMap() {
+  const width = 34, height = 34;
+  const map = [];
+  for (let y = 0; y < height; y++) {
+    const row = [];
+    for (let x = 0; x < width; x++) {
+      let n = (Math.sin(x * 15.234 + y * 41.17) * 31415.9) % 1;
+      n = Math.abs(n);
+      row.push(n > 0.85 ? TILE_SAND2 : TILE_SAND);
+    }
+    map.push(row);
+  }
+
+  // small oasis near the center as a landmark (and a water hazard for bullets to fly over)
+  const oasisX = Math.floor(width / 2), oasisY = Math.floor(height / 2);
+  for (let y = -2; y <= 2; y++) {
+    for (let x = -3; x <= 3; x++) {
+      if (x * x + y * y * 1.8 < 8) map[oasisY + y][oasisX + x] = TILE_WATER;
+    }
+  }
+
+  // scattered cactus patches — walkable, but they sting on contact
+  for (let i = 0; i < 100; i++) {
+    const x = Math.floor(Math.random() * width);
+    const y = Math.floor(Math.random() * height);
+    if (map[y][x] === TILE_SAND || map[y][x] === TILE_SAND2) {
+      if (Math.random() < 0.55) map[y][x] = TILE_CACTUS;
+    }
+  }
+
+  // guarantee a safe spawn point
+  const spawnTX = 4, spawnTY = Math.floor(height / 2);
+  map[spawnTY][spawnTX] = TILE_SAND;
+  map[spawnTY][spawnTX + 1] = TILE_SAND;
+  map[spawnTY - 1] ? map[spawnTY - 1][spawnTX] = TILE_SAND : null;
+
+  return {
+    world: map, width, height,
+    spawnX: spawnTX * TILE + TILE / 2,
+    spawnY: spawnTY * TILE + TILE / 2
+  };
 }
 
 let world = [];
@@ -233,12 +246,14 @@ function isBulletBlocked(tileX, tileY) {
 function isWalkable(tileX, tileY) {
   if (tileX < 0 || tileY < 0 || tileX >= MAP_W || tileY >= MAP_H) return false;
   const t = world[tileY][tileX];
-  return t === TILE_GRASS || t === TILE_GRASS2 || t === TILE_PATH || t === TILE_FLOOR || t === TILE_CONVEYOR;
+  return t === TILE_GRASS || t === TILE_GRASS2 || t === TILE_PATH || t === TILE_FLOOR || t === TILE_CONVEYOR || t === TILE_SAND || t === TILE_SAND2;
 }
 
 // --- Player ---
 let SPAWN_X = 0;
 let SPAWN_Y = 0;
+const PLAYER_MAX_LIVES = 3;
+let deathBanner = null; // { text, timer, fadeTotal }
 let player = {
   x: 0,
   y: 0,
@@ -255,6 +270,7 @@ let player = {
   health: 100,
   invulnTimer: 0,
   mana: 0,
+  lives: PLAYER_MAX_LIVES,
   rolling: false,
   rollTimer: 0,
   rollCooldownTimer: 0,
@@ -348,12 +364,103 @@ window.addEventListener('mouseup', e => {
   if (e.button === 0) wantsToShoot = false;
 });
 
+// --- Touch controls (mobile) ---
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+function canvasPosFromTouch(t) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return { x: (t.clientX - rect.left) * scaleX, y: (t.clientY - rect.top) * scaleY };
+}
+
+const JOYSTICK_MAX_RADIUS = 46; // canvas-space px the visual stick can travel
+let moveTouchId = null;
+let moveTouchBaseClient = { x: 0, y: 0 };
+let moveTouchBaseCanvas = { x: 0, y: 0 };
+let touchMoveX = 0, touchMoveY = 0;
+
+let aimTouchId = null;
+
+const ROLL_BTN = { x: 0, y: 0, r: 38 }; // populated relative to canvas size below
+
+function layoutTouchButtons() {
+  ROLL_BTN.x = canvas.width - 66;
+  ROLL_BTN.y = canvas.height - 66;
+  ROLL_BTN.r = 38;
+}
+layoutTouchButtons();
+
+function distTo(x1, y1, x2, y2) { return Math.hypot(x1 - x2, y1 - y2); }
+
+canvas.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    const pos = canvasPosFromTouch(t);
+
+    if (gameState === 'menu') { handleMenuClick(pos.x, pos.y); continue; }
+    if (gameState === 'mapSelect') { handleMapSelectClick(pos.x, pos.y); continue; }
+    if (waveState === 'intermission') { handleShopClick(pos.x, pos.y); continue; }
+
+    if (distTo(pos.x, pos.y, ROLL_BTN.x, ROLL_BTN.y) < ROLL_BTN.r) {
+      tryStartRoll();
+      continue;
+    }
+
+    if (pos.x < canvas.width * 0.42 && moveTouchId === null) {
+      moveTouchId = t.identifier;
+      moveTouchBaseClient = { x: t.clientX, y: t.clientY };
+      moveTouchBaseCanvas = pos;
+      touchMoveX = 0; touchMoveY = 0;
+    } else if (aimTouchId === null) {
+      aimTouchId = t.identifier;
+      mouse.x = pos.x; mouse.y = pos.y;
+      wantsToShoot = true;
+    }
+  }
+}, { passive: true });
+
+canvas.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === moveTouchId) {
+      let dx = t.clientX - moveTouchBaseClient.x;
+      let dy = t.clientY - moveTouchBaseClient.y;
+      const len = Math.hypot(dx, dy);
+      const maxLen = JOYSTICK_MAX_RADIUS * 1.4; // raw client-px drag range before clamping to -1..1
+      if (len > maxLen) { dx = dx / len * maxLen; dy = dy / len * maxLen; }
+      touchMoveX = Math.max(-1, Math.min(1, dx / maxLen));
+      touchMoveY = Math.max(-1, Math.min(1, dy / maxLen));
+    } else if (t.identifier === aimTouchId) {
+      const pos = canvasPosFromTouch(t);
+      mouse.x = pos.x; mouse.y = pos.y;
+    }
+  }
+}, { passive: true });
+
+function handleTouchEnd(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === moveTouchId) {
+      moveTouchId = null;
+      touchMoveX = 0; touchMoveY = 0;
+    }
+    if (t.identifier === aimTouchId) {
+      aimTouchId = null;
+      wantsToShoot = false;
+    }
+  }
+}
+canvas.addEventListener('touchend', handleTouchEnd, { passive: true });
+canvas.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
 function getInputVector() {
   let dx = 0, dy = 0;
   if (keys['w'] || keys['arrowup']) dy -= 1;
   if (keys['s'] || keys['arrowdown']) dy += 1;
   if (keys['a'] || keys['arrowleft']) dx -= 1;
   if (keys['d'] || keys['arrowright']) dx += 1;
+  if (Math.hypot(touchMoveX, touchMoveY) > 0.15) {
+    dx = touchMoveX;
+    dy = touchMoveY;
+  }
   return { dx, dy };
 }
 
@@ -392,8 +499,8 @@ const WEAPON_TIERS = [
   { name: 'SMG',            bulletsPerShot: 3, fireCooldown: 0.11, damage: 9,  spread: 0.18 },
   { name: 'Shotgun',        bulletsPerShot: 7, fireCooldown: 0.55, damage: 11, spread: 0.55 },
   { name: 'Minigun',        bulletsPerShot: 4, fireCooldown: 0.07, damage: 11, spread: 0.24 },
-  { name: 'RPG',            bulletsPerShot: 1, fireCooldown: 0.9,  damage: 70, spread: 0.02, explosive: true, explosionRadius: 65 },
-  { name: 'Mega RPG',       bulletsPerShot: 1, fireCooldown: 1.05, damage: 130, spread: 0.02, explosive: true, explosionRadius: 105 }
+  { name: 'RPG',            bulletsPerShot: 3, fireCooldown: 1.0,  damage: 55, spread: 0.22, explosive: true, explosionRadius: 150 },
+  { name: 'Mega RPG',       bulletsPerShot: 3, fireCooldown: 1.15, damage: 90, spread: 0.22, explosive: true, explosionRadius: 260 }
 ];
 let weaponTierIndex = 0;
 let weaponExplosive = false;
@@ -459,7 +566,7 @@ const ENEMY_TYPES = {
     hp: 40, radius: 12, chaseSpeed: 45, wanderSpeed: 18, aggroRange: 260,
     contactDamage: 4, contactCooldown: 0.6,
     preferredRange: 190,
-    shootCooldown: 1.8, pelletSpeed: 260, pelletDamage: 10, pelletRadius: 5,
+    shootCooldown: 1.8, pelletSpeed: 260, pelletDamage: 10, pelletRadius: 5, pelletCount: 1, pelletSpread: 0,
     manaMin: 6, manaMax: 10,
     minWave: 3
   },
@@ -477,6 +584,37 @@ const ENEMY_TYPES = {
     smashRange: 46, smashTelegraph: 0.5, smashCooldown: 2.2, smashDamage: 28, smashRadius: 60,
     manaMin: 12, manaMax: 18,
     minWave: 7
+  },
+  // --- elite / upgraded variants: rarer, tougher, more aggressive versions of the above ---
+  gunner: {
+    hp: 60, radius: 13, chaseSpeed: 48, wanderSpeed: 18, aggroRange: 270,
+    contactDamage: 5, contactCooldown: 0.6,
+    preferredRange: 190,
+    shootCooldown: 1.5, pelletSpeed: 280, pelletDamage: 9, pelletRadius: 5, pelletCount: 3, pelletSpread: 0.3,
+    manaMin: 10, manaMax: 15,
+    minWave: 11
+  },
+  heavylaser: {
+    hp: 65, radius: 14, chaseSpeed: 42, wanderSpeed: 16, aggroRange: 310,
+    contactDamage: 5, contactCooldown: 0.6,
+    preferredRange: 240,
+    laserCooldown: 3.0, laserTelegraph: 0.6, laserDamage: 26, laserWidth: 17, laserRange: 550,
+    manaMin: 13, manaMax: 18,
+    minWave: 13
+  },
+  warbrute: {
+    hp: 190, radius: 21, chaseSpeed: 44, wanderSpeed: 15, aggroRange: 260,
+    contactDamage: 9, contactCooldown: 0.6,
+    smashRange: 55, smashTelegraph: 0.45, smashCooldown: 1.8, smashDamage: 40, smashRadius: 80,
+    manaMin: 18, manaMax: 26,
+    minWave: 15
+  },
+  megablob: {
+    hp: 95, radius: 16, chaseSpeed: 62, wanderSpeed: 22, aggroRange: 240,
+    contactDamage: 12, contactCooldown: 0.6,
+    spitCooldown: 2.0, pelletSpeed: 230, pelletDamage: 8, pelletRadius: 5, pelletCount: 2, pelletSpread: 0.35,
+    manaMin: 14, manaMax: 20,
+    minWave: 17
   }
 };
 
@@ -486,6 +624,10 @@ function pickEnemyType(w) {
   if (w >= ENEMY_TYPES.shooter.minWave) options.push({ type: 'shooter', weight: 2 });
   if (w >= ENEMY_TYPES.laser.minWave) options.push({ type: 'laser', weight: 1.5 });
   if (w >= ENEMY_TYPES.brute.minWave) options.push({ type: 'brute', weight: 1 });
+  if (w >= ENEMY_TYPES.gunner.minWave) options.push({ type: 'gunner', weight: 1.1 });
+  if (w >= ENEMY_TYPES.heavylaser.minWave) options.push({ type: 'heavylaser', weight: 0.9 });
+  if (w >= ENEMY_TYPES.warbrute.minWave) options.push({ type: 'warbrute', weight: 0.7 });
+  if (w >= ENEMY_TYPES.megablob.minWave) options.push({ type: 'megablob', weight: 0.8 });
   const total = options.reduce((s, o) => s + o.weight, 0);
   let r = Math.random() * total;
   for (const o of options) {
@@ -561,6 +703,11 @@ function startWave(w) {
   if (w === ENEMY_TYPES.shooter.minWave) sub = 'New enemy: Shooters (cowboy hats, ranged pellets)!';
   else if (w === ENEMY_TYPES.laser.minWave) sub = 'New enemy: Laserguys (straight beam attack)!';
   else if (w === ENEMY_TYPES.brute.minWave) sub = 'New enemy: Brutes (heavy smash attack)!';
+  else if (w === ENEMY_TYPES.gunner.minWave) sub = 'New enemy: Gunners (3-shot burst)!';
+  else if (w === BANZAI_MIN_WAVE) sub = 'Banzai Bill incoming — a giant flying bullet!';
+  else if (w === ENEMY_TYPES.heavylaser.minWave) sub = 'New enemy: Heavy Laserguys (wide beam)!';
+  else if (w === ENEMY_TYPES.warbrute.minWave) sub = 'New enemy: War Brutes (huge smash)!';
+  else if (w === ENEMY_TYPES.megablob.minWave) sub = 'New enemy: Mega Blobs (tanky + spits pellets)!';
 
   waveBanner = { title: `Wave ${wave}`, sub, timer: 2.6, fadeTotal: 2.6 };
 }
@@ -577,7 +724,7 @@ function updateEnemies(dt) {
     const dyp = player.y - e.y;
     const distToPlayer = Math.hypot(dxp, dyp) || 0.001;
 
-    const isRanged = e.type === 'shooter' || e.type === 'laser';
+    const isRanged = e.type === 'shooter' || e.type === 'laser' || e.type === 'gunner' || e.type === 'heavylaser';
     const isTelegraphing = e.telegraphActive;
 
     let moveX = 0, moveY = 0, speed = def.wanderSpeed;
@@ -621,20 +768,43 @@ function updateEnemies(dt) {
     }
 
     // --- type-specific attacks ---
-    if (e.type === 'shooter' && !isTelegraphing && distToPlayer < def.aggroRange && e.attackTimer <= 0) {
+    if ((e.type === 'shooter' || e.type === 'gunner') && !isTelegraphing && distToPlayer < def.aggroRange && e.attackTimer <= 0) {
       e.attackTimer = def.shootCooldown;
-      const angle = Math.atan2(dyp, dxp) + (Math.random() - 0.5) * 0.12;
-      enemyBullets.push({
-        x: e.x, y: e.y - 6,
-        vx: Math.cos(angle) * def.pelletSpeed,
-        vy: Math.sin(angle) * def.pelletSpeed,
-        damage: def.pelletDamage,
-        radius: def.pelletRadius,
-        life: 2.5
-      });
+      const baseAngle = Math.atan2(dyp, dxp);
+      const count = def.pelletCount || 1;
+      for (let p = 0; p < count; p++) {
+        const spread = count > 1 ? (p - (count - 1) / 2) * (def.pelletSpread / (count - 1)) : 0;
+        const angle = baseAngle + spread + (Math.random() - 0.5) * 0.1;
+        enemyBullets.push({
+          x: e.x, y: e.y - 6,
+          vx: Math.cos(angle) * def.pelletSpeed,
+          vy: Math.sin(angle) * def.pelletSpeed,
+          damage: def.pelletDamage,
+          radius: def.pelletRadius,
+          life: 2.5
+        });
+      }
     }
 
-    if (e.type === 'laser') {
+    if (e.type === 'megablob' && !isTelegraphing && distToPlayer < def.aggroRange && e.attackTimer <= 0) {
+      e.attackTimer = def.spitCooldown;
+      const baseAngle = Math.atan2(dyp, dxp);
+      const count = def.pelletCount || 1;
+      for (let p = 0; p < count; p++) {
+        const spread = count > 1 ? (p - (count - 1) / 2) * (def.pelletSpread / (count - 1)) : 0;
+        const angle = baseAngle + spread + (Math.random() - 0.5) * 0.1;
+        enemyBullets.push({
+          x: e.x, y: e.y - 6,
+          vx: Math.cos(angle) * def.pelletSpeed,
+          vy: Math.sin(angle) * def.pelletSpeed,
+          damage: def.pelletDamage,
+          radius: def.pelletRadius,
+          life: 2.5
+        });
+      }
+    }
+
+    if (e.type === 'laser' || e.type === 'heavylaser') {
       if (!isTelegraphing && distToPlayer < def.aggroRange && e.attackTimer <= 0) {
         e.telegraphActive = true;
         e.telegraphTimer = def.laserTelegraph;
@@ -665,7 +835,7 @@ function updateEnemies(dt) {
       }
     }
 
-    if (e.type === 'brute') {
+    if (e.type === 'brute' || e.type === 'warbrute') {
       if (!isTelegraphing && distToPlayer < def.smashRange && e.attackTimer <= 0) {
         e.telegraphActive = true;
         e.telegraphTimer = def.smashTelegraph;
@@ -1591,12 +1761,14 @@ function startGame(mapId) {
     health: 100,
     invulnTimer: 0,
     mana: 0,
+    lives: PLAYER_MAX_LIVES,
     rolling: false,
     rollTimer: 0,
     rollCooldownTimer: 0,
     rollDirX: 0,
     rollDirY: 1
   };
+  deathBanner = null;
 
   bullets.length = 0;
   enemies.length = 0;
@@ -1713,9 +1885,16 @@ const MAP_DEFS = [
     accent: '#4a7a44'
   },
   {
+    id: 'desert',
+    name: 'Desert',
+    difficulty: 'Hard',
+    desc: 'Open dunes and an oasis. Watch your step — the cacti sting hard.',
+    accent: '#d9b676'
+  },
+  {
     id: 'inferno',
     name: 'Inferno',
-    difficulty: 'Hard',
+    difficulty: 'Very Hard',
     desc: 'An abandoned factory. A conveyor belt drags you toward an open flame pit — step off it or burn.',
     accent: '#c85a2a'
   }
@@ -1832,10 +2011,11 @@ function loop(now) {
 
 function update(dt) {
   if (player.invulnTimer > 0) player.invulnTimer -= dt;
+  if (deathBanner && deathBanner.timer > 0) deathBanner.timer -= dt;
   if (player.rollCooldownTimer > 0) player.rollCooldownTimer -= dt;
 
   const { dx, dy } = getInputVector();
-  const running = keys['shift'];
+  const running = keys['shift'] || Math.hypot(touchMoveX, touchMoveY) > 0.15;
   const speed = running ? player.speedRun : player.speedWalk;
 
   let moveX, moveY, effectiveSpeed;
@@ -1876,7 +2056,7 @@ function update(dt) {
   player.x = Math.max(TILE / 2, Math.min(MAP_W * TILE - TILE / 2, player.x));
   player.y = Math.max(TILE / 2, Math.min(MAP_H * TILE - TILE / 2, player.y));
 
-  // --- map hazards: conveyor belts push the player, flame tiles kill instantly ---
+  // --- map hazards: conveyor belts push the player, flame tiles kill instantly, cacti sting ---
   const curTX = Math.floor(player.x / TILE);
   const curTY = Math.floor(player.y / TILE);
   const curTileRow = world[curTY];
@@ -1888,6 +2068,10 @@ function update(dt) {
   }
   if (curTile === TILE_FLAME && player.invulnTimer <= 0) {
     player.health = 0;
+  }
+  if (curTile === TILE_CACTUS && player.invulnTimer <= 0) {
+    player.health -= CACTUS_DAMAGE;
+    player.invulnTimer = 0.5;
   }
 
   if (player.moving) {
@@ -2003,7 +2187,14 @@ function update(dt) {
     player.x = SPAWN_X;
     player.y = SPAWN_Y;
     player.invulnTimer = 2.0;
-    restartWaves();
+    player.lives -= 1;
+    if (player.lives > 0) {
+      deathBanner = { text: `Life lost! ${player.lives} ${player.lives === 1 ? 'life' : 'lives'} remaining`, timer: 2.4, fadeTotal: 2.4 };
+    } else {
+      player.lives = PLAYER_MAX_LIVES;
+      deathBanner = { text: `Out of lives — waves restarting`, timer: 2.4, fadeTotal: 2.4 };
+      restartWaves();
+    }
   }
 }
 
@@ -2032,6 +2223,9 @@ function tileColor(t) {
     case TILE_WALL: return '#26262c';
     case TILE_CONVEYOR: return '#5a5230';
     case TILE_FLAME: return '#3a1210';
+    case TILE_SAND: return '#d9b676';
+    case TILE_SAND2: return '#e0c489';
+    case TILE_CACTUS: return '#d9b676';
     default: return '#3f6b3a';
   }
 }
@@ -2099,6 +2293,8 @@ function render() {
     for (let tx = startTX; tx < endTX; tx++) {
       if (world[ty][tx] === TILE_TREE) {
         drawables.push({ y: ty * TILE + TILE, draw: () => drawTree(tx * TILE - camX, ty * TILE - camY) });
+      } else if (world[ty][tx] === TILE_CACTUS) {
+        drawables.push({ y: ty * TILE + TILE, draw: () => drawCactus(tx * TILE - camX, ty * TILE - camY) });
       }
     }
   }
@@ -2128,8 +2324,10 @@ function render() {
   if (pongEquipped) drawPong();
   drawHUD();
   drawWaveBanner();
+  drawDeathBanner();
   drawShop();
   drawCrosshair();
+  drawTouchControls();
 }
 
 function drawTree(sx, sy) {
@@ -2145,6 +2343,58 @@ function drawTree(sx, sy) {
   ctx.fill();
 }
 
+function drawCactus(sx, sy) {
+  const cx = sx + 16, baseY = sy + 28;
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(cx, baseY, 10, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#3a7a4a';
+  ctx.strokeStyle = '#245530';
+  ctx.lineWidth = 1.5;
+
+  // main trunk
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(cx - 4, baseY - 24, 8, 24, 3) : ctx.rect(cx - 4, baseY - 24, 8, 24);
+  ctx.fill();
+  ctx.stroke();
+
+  // left arm
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(cx - 12, baseY - 16, 6, 12, 3) : ctx.rect(cx - 12, baseY - 16, 6, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(cx - 12, baseY - 20, 6, 8, 3) : ctx.rect(cx - 12, baseY - 20, 6, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // right arm
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(cx + 6, baseY - 19, 6, 11, 3) : ctx.rect(cx + 6, baseY - 19, 6, 11);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(cx + 6, baseY - 24, 6, 8, 3) : ctx.rect(cx + 6, baseY - 24, 6, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // spines (little warning ticks)
+  ctx.strokeStyle = '#e8d9a0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    const yy = baseY - 22 + i * 4;
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, yy);
+    ctx.lineTo(cx - 7, yy - 1);
+    ctx.moveTo(cx + 5, yy);
+    ctx.lineTo(cx + 7, yy - 1);
+    ctx.stroke();
+  }
+}
+
 function drawEnemy(e, camX, camY) {
   const sx = Math.round(e.x - camX);
   const sy = Math.round(e.y - camY);
@@ -2154,11 +2404,11 @@ function drawEnemy(e, camX, camY) {
   ctx.ellipse(sx, sy + e.radius - 2, e.radius * 0.8, e.radius * 0.35, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  if (e.type === 'shooter') {
+  if (e.type === 'shooter' || e.type === 'gunner') {
     drawShooterEnemy(e, sx, sy);
-  } else if (e.type === 'laser') {
+  } else if (e.type === 'laser' || e.type === 'heavylaser') {
     drawLaserEnemy(e, sx, sy);
-  } else if (e.type === 'brute') {
+  } else if (e.type === 'brute' || e.type === 'warbrute') {
     drawBruteEnemy(e, sx, sy);
   } else {
     drawBlobEnemy(e, sx, sy);
@@ -2174,10 +2424,31 @@ function drawEnemy(e, camX, camY) {
 }
 
 function drawBlobEnemy(e, sx, sy) {
-  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : '#8a2f3a';
+  const elite = e.type === 'megablob';
+  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (elite ? '#5c1a24' : '#8a2f3a');
   ctx.beginPath();
   ctx.arc(sx, sy, e.radius, 0, Math.PI * 2);
   ctx.fill();
+
+  if (elite) {
+    ctx.strokeStyle = '#2e0a10';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // spikes
+    ctx.fillStyle = '#3a0f16';
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+      const bx = sx + Math.cos(a) * (e.radius - 2);
+      const by = sy + Math.sin(a) * (e.radius - 2);
+      const tx = sx + Math.cos(a) * (e.radius + 6);
+      const ty = sy + Math.sin(a) * (e.radius + 6);
+      ctx.beginPath();
+      ctx.moveTo(bx + Math.cos(a + 1.5) * 3, by + Math.sin(a + 1.5) * 3);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(bx - Math.cos(a + 1.5) * 3, by - Math.sin(a + 1.5) * 3);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
 
   ctx.fillStyle = '#1a0a0c';
   ctx.beginPath();
@@ -2192,11 +2463,17 @@ function drawBlobEnemy(e, sx, sy) {
 }
 
 function drawShooterEnemy(e, sx, sy) {
+  const elite = e.type === 'gunner';
   // body
-  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : '#a06a3a';
+  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (elite ? '#7a3a1f' : '#a06a3a');
   ctx.beginPath();
   ctx.arc(sx, sy, e.radius, 0, Math.PI * 2);
   ctx.fill();
+  if (elite) {
+    ctx.strokeStyle = '#3a1a0a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
 
   // eyes
   ctx.fillStyle = '#1a0a0c';
@@ -2206,11 +2483,11 @@ function drawShooterEnemy(e, sx, sy) {
   ctx.fill();
 
   // cowboy hat: brim + crown
-  ctx.fillStyle = '#5a3a1f';
+  ctx.fillStyle = elite ? '#2a1a0f' : '#5a3a1f';
   ctx.beginPath();
   ctx.ellipse(sx, sy - e.radius + 2, e.radius * 1.15, 4, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#6b4526';
+  ctx.fillStyle = elite ? '#3a2415' : '#6b4526';
   ctx.beginPath();
   ctx.moveTo(sx - e.radius * 0.55, sy - e.radius + 1);
   ctx.lineTo(sx - e.radius * 0.4, sy - e.radius - 9);
@@ -2221,24 +2498,39 @@ function drawShooterEnemy(e, sx, sy) {
   ctx.strokeStyle = '#3a2412';
   ctx.lineWidth = 1;
   ctx.stroke();
+
+  if (elite) {
+    // silver hat band to mark the elite gunner
+    ctx.fillStyle = '#c9c9c9';
+    ctx.fillRect(sx - e.radius * 0.4, sy - e.radius - 3, e.radius * 0.8, 2.5);
+  }
 }
 
 function drawLaserEnemy(e, sx, sy) {
-  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : '#4a3a7a';
+  const elite = e.type === 'heavylaser';
+  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (elite ? '#3a2a5a' : '#4a3a7a');
   ctx.beginPath();
   ctx.arc(sx, sy, e.radius, 0, Math.PI * 2);
   ctx.fill();
+  if (elite) {
+    ctx.strokeStyle = '#1a1030';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
 
-  // visor
+  // visor (bigger + orange-tinted for the elite variant)
   const glow = e.telegraphActive ? (0.6 + Math.sin(animClock * 30) * 0.4) : 0.5;
-  ctx.fillStyle = `rgba(255, 70, 70, ${glow})`;
-  ctx.fillRect(sx - 6, sy - 3, 12, 4);
+  ctx.fillStyle = elite ? `rgba(255, 140, 40, ${glow})` : `rgba(255, 70, 70, ${glow})`;
+  const visorW = elite ? 16 : 12;
+  ctx.fillRect(sx - visorW / 2, sy - 3, visorW, elite ? 6 : 4);
 
-  // telegraph aiming line
+  // telegraph aiming line (thicker for the elite beam)
   if (e.telegraphActive) {
     const dirX = Math.cos(e.aimAngle), dirY = Math.sin(e.aimAngle);
-    ctx.strokeStyle = `rgba(255, 60, 60, ${0.35 + Math.sin(animClock * 25) * 0.25})`;
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = elite
+      ? `rgba(255, 140, 40, ${0.4 + Math.sin(animClock * 25) * 0.3})`
+      : `rgba(255, 60, 60, ${0.35 + Math.sin(animClock * 25) * 0.25})`;
+    ctx.lineWidth = elite ? 4 : 2;
     ctx.beginPath();
     ctx.moveTo(sx, sy);
     ctx.lineTo(sx + dirX * 400, sy + dirY * 400);
@@ -2247,24 +2539,41 @@ function drawLaserEnemy(e, sx, sy) {
 }
 
 function drawBruteEnemy(e, sx, sy) {
+  const elite = e.type === 'warbrute';
+  const def = ENEMY_TYPES[e.type];
+
   // smash telegraph ring (expanding warning circle)
   if (e.telegraphActive) {
-    const def = ENEMY_TYPES.brute;
     const t = 1 - Math.max(0, e.telegraphTimer / def.smashTelegraph);
     ctx.strokeStyle = `rgba(255, 120, 60, ${0.7 - t * 0.5})`;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = elite ? 4 : 3;
     ctx.beginPath();
     ctx.arc(sx, sy, def.smashRadius * t, 0, Math.PI * 2);
     ctx.stroke();
   }
 
-  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : '#5a2418';
+  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : (elite ? '#3a1610' : '#5a2418');
   ctx.beginPath();
   ctx.arc(sx, sy, e.radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = '#2e0f0a';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = elite ? 3 : 2;
   ctx.stroke();
+
+  if (elite) {
+    // shoulder spikes
+    ctx.fillStyle = '#7a1a10';
+    for (const a of [-0.9, 0.9]) {
+      const bx = sx + Math.cos(a) * (e.radius - 3);
+      const by = sy + Math.sin(a) * (e.radius - 3);
+      ctx.beginPath();
+      ctx.moveTo(bx - 4, by);
+      ctx.lineTo(bx, by - 10);
+      ctx.lineTo(bx + 4, by);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
 
   ctx.fillStyle = '#1a0a0c';
   ctx.beginPath();
@@ -2556,6 +2865,7 @@ function drawWaveBanner() {
 }
 
 function drawCrosshair() {
+  if (isTouchDevice) return; // no mouse cursor on touch — aiming is via drag, not a pointer
   ctx.strokeStyle = 'rgba(244, 234, 217, 0.8)';
   ctx.lineWidth = 1.5;
   const r = 8;
@@ -2572,6 +2882,90 @@ function drawCrosshair() {
   ctx.moveTo(mouse.x, mouse.y + r - 2);
   ctx.lineTo(mouse.x, mouse.y + r + 5);
   ctx.stroke();
+}
+
+function drawTouchControls() {
+  if (!isTouchDevice) return;
+
+  // movement joystick
+  const baseVisible = moveTouchId !== null;
+  const baseX = baseVisible ? moveTouchBaseCanvas.x : 70;
+  const baseY = baseVisible ? moveTouchBaseCanvas.y : canvas.height - 90;
+  const alpha = baseVisible ? 0.45 : 0.22;
+
+  ctx.fillStyle = `rgba(244, 234, 217, ${alpha * 0.4})`;
+  ctx.beginPath();
+  ctx.arc(baseX, baseY, JOYSTICK_MAX_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = `rgba(244, 234, 217, ${alpha})`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const knobX = baseX + touchMoveX * JOYSTICK_MAX_RADIUS;
+  const knobY = baseY + touchMoveY * JOYSTICK_MAX_RADIUS;
+  ctx.fillStyle = `rgba(224, 164, 88, ${baseVisible ? 0.8 : 0.35})`;
+  ctx.beginPath();
+  ctx.arc(knobX, knobY, 20, 0, Math.PI * 2);
+  ctx.fill();
+
+  // roll button
+  ctx.fillStyle = 'rgba(122, 74, 31, 0.55)';
+  ctx.beginPath();
+  ctx.arc(ROLL_BTN.x, ROLL_BTN.y, ROLL_BTN.r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(224, 164, 88, 0.8)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(244, 234, 217, 0.9)';
+  ctx.font = 'bold 13px Trebuchet MS, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('ROLL', ROLL_BTN.x, ROLL_BTN.y + 5);
+  ctx.textAlign = 'left';
+
+  // hint that the right side of the screen aims + fires
+  if (aimTouchId === null) {
+    ctx.fillStyle = 'rgba(244, 234, 217, 0.25)';
+    ctx.font = '12px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('touch & drag to aim / fire', canvas.width * 0.72, canvas.height - 20);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawHeartIcon(cx, cy, filled) {
+  const s = 7;
+  ctx.fillStyle = filled ? '#e05a4f' : 'rgba(224,90,79,0.25)';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + s * 0.7);
+  ctx.bezierCurveTo(cx - s * 1.3, cy - s * 0.5, cx - s * 0.5, cy - s * 1.3, cx, cy - s * 0.35);
+  ctx.bezierCurveTo(cx + s * 0.5, cy - s * 1.3, cx + s * 1.3, cy - s * 0.5, cx, cy + s * 0.7);
+  ctx.closePath();
+  ctx.fill();
+  if (!filled) {
+    ctx.strokeStyle = 'rgba(224,90,79,0.5)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function drawDeathBanner() {
+  if (!deathBanner || deathBanner.timer <= 0) return;
+  const alpha = Math.max(0, Math.min(1, deathBanner.timer / Math.min(0.6, deathBanner.fadeTotal)));
+  const cx = canvas.width / 2;
+  const cy = canvas.height * 0.42;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = 'center';
+
+  ctx.font = 'bold 22px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillText(deathBanner.text, cx + 2, cy + 2);
+  ctx.fillStyle = '#e05a4f';
+  ctx.fillText(deathBanner.text, cx, cy);
+
+  ctx.restore();
+  ctx.textAlign = 'left';
 }
 
 function drawHUD() {
@@ -2600,6 +2994,14 @@ function drawHUD() {
   ctx.textAlign = 'center';
   ctx.fillText(`HP  ${Math.max(0, Math.round(player.health))} / ${player.maxHealth}`, bx + barW / 2, by + barH - 4);
   ctx.textAlign = 'left';
+
+  // lives readout (hearts)
+  for (let i = 0; i < PLAYER_MAX_LIVES; i++) {
+    const hx = bx + barW + 14 + i * 20;
+    const hy = by + barH / 2;
+    const filled = i < player.lives;
+    drawHeartIcon(hx, hy, filled);
+  }
 
   // wave / kill progress readout
   const wy = by + barH + 12;
